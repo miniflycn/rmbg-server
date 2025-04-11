@@ -7,8 +7,8 @@ use std::path::Path;
 
 const ML_MODEL_IMAGE_WIDTH: u32 = 1024;
 const ML_MODEL_IMAGE_HEIGHT: u32 = 1024;
-const ML_MODEL_INPUT_NAME: &str = "input";
-const ML_MODEL_OUTPUT_NAME: &str = "output";
+// const ML_MODEL_INPUT_NAME: &str = "input";
+// const ML_MODEL_OUTPUT_NAME: &str = "output";
 
 /// A struct for removing backgrounds from images using a machine learning model.
 ///
@@ -73,11 +73,11 @@ impl Rmbg {
         let img = preprocess_image(original_img)?;
 
         let input = img.insert_axis(Axis(0));
-        let inputs = ort::inputs![ML_MODEL_INPUT_NAME => input.view()]?;
+        let inputs = ort::inputs![input.view()]?;
 
         let outputs = self.model.run(inputs)?;
 
-        let output = outputs[ML_MODEL_OUTPUT_NAME].try_extract_tensor()?;
+        let output = outputs[0].try_extract_tensor()?;
         let view = output.view();
         let output: ArrayView<f32, Dim<[usize; 2]>> = view.slice(s![0, 0, .., ..]);
 
@@ -151,7 +151,7 @@ fn postprocess_image(
         .ok_or(anyhow!("Should be OK"))?;
     let result = (model_result.mapv(|x| x - mi) / (ma - mi)) * 255.0;
 
-    let result_u8 = result.mapv(|x| x as u8).into_raw_vec();
+    let result_u8 = result.mapv(|x| x as u8).into_raw_vec_and_offset().0;
 
     let mut imgbuf: ImageBuffer<Rgb<u8>, Vec<u8>> =
         ImageBuffer::new(ML_MODEL_IMAGE_WIDTH, ML_MODEL_IMAGE_HEIGHT);
@@ -172,33 +172,30 @@ fn resize_rgba(
 ) -> anyhow::Result<Vec<u8>> {
     let width = NonZeroU32::new(img.width()).ok_or(anyhow!("Incorrect image width"))?;
     let height = NonZeroU32::new(img.height()).ok_or(anyhow!("Incorrect image height"))?;
-    let mut src_image = fr::Image::from_vec_u8(
-        width,
-        height,
+    let mut src_image = fr::images::Image::from_vec_u8(
+        width.into(),
+        height.into(),
         img.to_rgba8().into_raw(),
         fr::PixelType::U8x4,
     )?;
 
     // Multiple RGB channels of source image by alpha channel
     let alpha_mul_div = fr::MulDiv::default();
-    alpha_mul_div.multiply_alpha_inplace(&mut src_image.view_mut())?;
+    alpha_mul_div.multiply_alpha_inplace(&mut src_image)?;
 
     // Create container for data of destination image
     let dst_width = NonZeroU32::new(target_width).ok_or(anyhow!("Incorrect target image width"))?;
     let dst_height =
         NonZeroU32::new(target_height).ok_or(anyhow!("Incorrect target image height"))?;
-    let mut dst_image = fr::Image::new(dst_width, dst_height, src_image.pixel_type());
-
-    // Get mutable view of destination image data
-    let mut dst_view = dst_image.view_mut();
-
+    let mut dst_image = fr::images::Image::new(dst_width.into(), dst_height.into(), src_image.pixel_type());
+    
     // Create Resizer instance and resize source image
     // into buffer of destination image
-    let mut resizer = fr::Resizer::new(fr::ResizeAlg::Convolution(fr::FilterType::Bilinear));
-    resizer.resize(&src_image.view(), &mut dst_view)?;
+    let mut resizer = fr::Resizer::new();
+    resizer.resize(&src_image, &mut dst_image, None)?;
 
     // Divide RGB channels of destination image by alpha
-    alpha_mul_div.divide_alpha_inplace(&mut dst_view)?;
+    alpha_mul_div.divide_alpha_inplace(&mut dst_image)?;
 
     Ok(dst_image.into_vec())
 }
