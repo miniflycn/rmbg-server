@@ -1,5 +1,10 @@
+// 在文件顶部添加这一行
+mod rmbg;
+
+
 use once_cell::sync::Lazy;
 use rmbg::Rmbg;
+// use rmbg::Rmbg;
 use serde_derive::{Deserialize, Serialize};
 use warp::{Filter, Rejection, Reply};
 use image::{DynamicImage, ImageFormat};
@@ -59,7 +64,7 @@ fn image_to_base64(img: &DynamicImage) -> Result<String, ImageError> {
 }
 
 static RMGB: Lazy<Rmbg> = Lazy::new(|| {
-    Rmbg::new("models/model_quantized.onnx").unwrap()
+    Rmbg::new("models/model.onnx").unwrap()
 });
 
 async fn process_image(image_input: ImageInput) -> Result<impl Reply, Rejection> {
