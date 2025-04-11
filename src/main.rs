@@ -1,15 +1,14 @@
-// 在文件顶部添加这一行
 mod rmbg;
-
 
 use once_cell::sync::Lazy;
 use rmbg::Rmbg;
-// use rmbg::Rmbg;
 use serde_derive::{Deserialize, Serialize};
-use warp::{Filter, Rejection, Reply};
+use warp::{Filter, Rejection, Reply, http::StatusCode};
 use image::{DynamicImage, ImageFormat};
 use std::io::Cursor;
 use std::time::Instant;
+use std::convert::Infallible;
+use base64::{engine::general_purpose, Engine as _};
 
 #[derive(Deserialize)]
 struct ImageInput {
@@ -22,12 +21,16 @@ struct ImageOutput {
     process_time: u128,
 }
 
+#[derive(Serialize)]
+struct ErrorResponse {
+    code: u16,
+    message: String,
+}
+
 #[derive(Debug)]
 pub struct ImageError(pub String);
 
 impl warp::reject::Reject for ImageError {}
-
-use base64::{engine::general_purpose, Engine as _};
 
 fn get_base64_type(type_info: &str) -> Result<ImageFormat, ImageError> {
     match type_info {
@@ -64,7 +67,10 @@ fn image_to_base64(img: &DynamicImage) -> Result<String, ImageError> {
 }
 
 static RMGB: Lazy<Rmbg> = Lazy::new(|| {
-    Rmbg::new("models/model.onnx").unwrap()
+    println!("正在加载模型...");
+    let model = Rmbg::new("models/model.onnx").unwrap();
+    println!("模型加载完成");
+    model
 });
 
 async fn process_image(image_input: ImageInput) -> Result<impl Reply, Rejection> {
@@ -88,15 +94,54 @@ async fn process_image(image_input: ImageInput) -> Result<impl Reply, Rejection>
     }))
 }
 
+// 错误处理中间件
+async fn handle_rejection(err: Rejection) -> Result<impl Reply, Infallible> {
+    let (code, message) = if err.is_not_found() {
+        (StatusCode::NOT_FOUND, "未找到资源".to_string())
+    } else if let Some(e) = err.find::<ImageError>() {
+        (StatusCode::BAD_REQUEST, e.0.clone())
+    } else if let Some(e) = err.find::<warp::filters::body::BodyDeserializeError>() {
+        (StatusCode::BAD_REQUEST, format!("请求格式错误: {}", e))
+    } else {
+        eprintln!("未处理的错误: {:?}", err);
+        (StatusCode::INTERNAL_SERVER_ERROR, "服务器内部错误".to_string())
+    };
+
+    let json = warp::reply::json(&ErrorResponse {
+        code: code.as_u16(),
+        message,
+    });
+
+    Ok(warp::reply::with_status(json, code))
+}
+
 #[tokio::main]
 async fn main() {
-    let route = warp::post()
-        .and(warp::path("run"))
+    // 添加CORS支持
+    let cors = warp::cors()
+        .allow_any_origin()
+        .allow_methods(vec!["POST", "GET", "OPTIONS"])
+        .allow_headers(vec!["Content-Type"]);
+
+    let health_route = warp::path("health")
+        .and(warp::get())
+        .map(|| "OK");
+
+    let api_route = warp::path("run")
+        .and(warp::post())
         .and(warp::body::json())
         .and_then(process_image);
 
+    let routes = health_route
+        .or(api_route)
+        .with(cors)
+        .recover(handle_rejection);
+
     println!("服务器启动在 http://127.0.0.1:3030");
-    warp::serve(route)
+    println!("健康检查: GET /health");
+    println!("图片处理: POST /run");
+    
+    warp::serve(routes)
         .run(([127, 0, 0, 1], 3030))
         .await;
 }
